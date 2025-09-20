@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>RNG Item Pull Game w/ Online Trading</title>
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #202c3c; color: #fff; text-align: center; }
+    .container { margin-top: 60px; max-width: 700px; margin-left:auto; margin-right:auto; }
+    .hidden { display: none; }
+    .item { border-radius: 6px; padding: 8px 20px; margin: 8px auto; max-width: 320px; font-weight: bold; font-size: 20px; }
+    .Common { background: #cccccc; color: #222; }
+    .Rare { background: #4fb4ff; color: #222; }
+    .Epic { background: #a266ff; color: #fff; }
+    .Legendary { background: gold; color: #222; }
+    .inventory-list { margin-top: 10px; text-align: left; display: inline-block; background: #2c3e50; padding: 18px 32px; border-radius: 12px; }
+    .inventory-item { margin-bottom: 8px; font-size: 18px; }
+    button { padding: 12px 32px; font-size: 18px; background: #3578e5; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin: 12px 0; }
+    button:hover { background: #285bb5; }
+    input[type="text"], input[type="number"] { padding: 6px; font-size: 18px; border-radius: 5px; border: none; margin: 5px; }
+    .trade-offer { background: #263248; padding: 12px; border-radius: 8px; margin: 12px 0; }
+    .trade-status { margin-top: 18px; font-size: 18px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>RNG Item Pull Game<br>with Online Trading</h1>
+  <div id="login-section">
+    <p>Enter your username (must be unique):</p>
+    <input type="text" id="username-input" maxlength="16" placeholder="Username"/>
+    <button onclick="login()">Login</button>
+    <div id="login-error" style="color:#e53935;"></div>
+  </div>
+  
+  <div id="game-section" class="hidden">
+    <p>Welcome, <b id="user-label"></b>!</p>
+    <button onclick="pullItems()">Pull Items!</button>
+    <button onclick="showInventory()">Show Inventory</button>
+    <button onclick="showTradeUI()">Trade with Another Player</button>
+    <button onclick="showIncomingTrades()">View Incoming Trades</button>
+    <div class="result" id="result"></div>
+    <div class="inventory" id="inventory"></div>
+    <div class="trade-ui" id="trade-ui"></div>
+    <div class="trade-incoming" id="trade-incoming"></div>
+    <div class="trade-status" id="trade-status"></div>
+  </div>
+</div>
+<script>
+/* ====== Firebase Setup ====== */
+const firebaseConfig = {
+  // REPLACE WITH YOUR FIREBASE CONFIG
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_BUCKET",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+/* ====== Game Data ====== */
+const items = [
+  { name: "Iron Sword", rarity: "Common" },
+  { name: "Leather Boots", rarity: "Common" },
+  { name: "Silver Shield", rarity: "Rare" },
+  { name: "Mystic Wand", rarity: "Rare" },
+  { name: "Dragon Helm", rarity: "Epic" },
+  { name: "Phoenix Feather", rarity: "Epic" },
+  { name: "Excalibur", rarity: "Legendary" },
+  { name: "Orb of Eternity", rarity: "Legendary" }
+];
+const rarityRates = { "Common": 60, "Rare": 25, "Epic": 10, "Legendary": 5 };
+
+/* ====== State ====== */
+let username = "";
+let inventory = {}; // local copy
+
+/* ====== Login ====== */
+async function login() {
+  document.getElementById("login-error").innerText = "";
+  const input = document.getElementById("username-input").value.trim();
+  if (!input.match(/^[a-zA-Z0-9_]{3,16}$/)) {
+    document.getElementById("login-error").innerText = "Username must be 3-16 letters, numbers, or underscores.";
+    return;
+  }
+  username = input;
+  // Check if user exists, if not create
+  const userRef = db.collection("users").doc(username);
+  const userDoc = await userRef.get();
+  if (!userDoc.exists) {
+    await userRef.set({ inventory: {} });
+  }
+  // Load inventory
+  inventory = (await userRef.get()).data().inventory || {};
+  document.getElementById("user-label").innerText = username;
+  document.getElementById("login-section").classList.add("hidden");
+  document.getElementById("game-section").classList.remove("hidden");
+  showInventory();
+}
+
+/* ====== RNG Logic ====== */
+function itemsByRarity(rarity) { return items.filter(i => i.rarity === rarity); }
+function getRandomRarity() {
+  const roll = Math.random() * 100;
+  let cumulative = 0;
+  for (const [rarity, rate] of Object.entries(rarityRates)) {
+    cumulative += rate;
+    if (roll < cumulative) return rarity;
+  }
+  return "Common";
+}
+async function pullItems(n = 5) {
+  const pulled = [];
+  for (let i = 0; i < n; i++) {
+    const rarity = getRandomRarity();
+    const pool = itemsByRarity(rarity);
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    pulled.push(item);
+    addToInventory(item);
+  }
+  await saveInventory();
+  showResult(pulled);
+}
+function addToInventory(item) {
+  if (inventory[item.name]) {
+    inventory[item.name].count += 1;
+  } else {
+    inventory[item.name] = { count: 1, rarity: item.rarity };
+  }
+}
+async function saveInventory() {
+  await db.collection("users").doc(username).update({ inventory });
+}
+
+/* ====== Inventory UI ====== */
+function showResult(pulled) {
+  document.getElementById("inventory").innerHTML = "";
+  document.getElementById("trade-ui").innerHTML = "";
+  document.getElementById("trade-incoming").innerHTML = "";
+  document.getElementById("result").innerHTML = "<h2>You pulled:</h2>" +
+    pulled.map(item =>
+      `<div class="item ${item.rarity}">${item.name} <span style="font-size:14px;">(${item.rarity})</span></div>`
+    ).join("");
+}
+function showInventory() {
+  document.getElementById("result").innerHTML = "";
+  document.getElementById("trade-ui").innerHTML = "";
+  document.getElementById("trade-incoming").innerHTML = "";
+  const invDiv = document.getElementById("inventory");
+  invDiv.innerHTML = "<h2>Your Inventory:</h2>";
+  if (Object.keys(inventory).length === 0) {
+    invDiv.innerHTML += "<p>No items yet!</p>";
+    return;
+  }
+  invDiv.innerHTML += '<div class="inventory-list">';
+  for (const [name, data] of Object.entries(inventory)) {
+    invDiv.innerHTML += `<div class="inventory-item ${data.rarity}">${name} (${data.rarity}): <b>${data.count}</b></div>`;
+  }
+  invDiv.innerHTML += '</div>';
+}
+
+/* ====== Trading UI ====== */
+function showTradeUI() {
+  document.getElementById("inventory").innerHTML = "";
+  document.getElementById("result").innerHTML = "";
+  document.getElementById("trade-incoming").innerHTML = "";
+  const div = document.getElementById("trade-ui");
+  div.innerHTML = `<h2>Send a Trade Offer</h2>
+    <p>Recipient's Username: <input type="text" id="trade-username" maxlength="16" /></p>
+    <h3>Your Offer:</h3>
+    <div id="trade-offer-list"></div>
+    <button onclick="addTradeOfferRow()">Add Item to Offer</button>
+    <h3>Your Request:</h3>
+    <div id="trade-request-list"></div>
+    <button onclick="addTradeRequestRow()">Add Item to Request</button>
+    <br>
+    <button onclick="sendTradeOffer()">Send Trade Offer</button>
+    <div id="trade-status"></div>`;
+  addTradeOfferRow();
+  addTradeRequestRow();
+}
+
+/* ====== Trade Row Adders ====== */
+function addTradeOfferRow() {
+  const div = document.getElementById("trade-offer-list");
+  const select = itemDropdown(inventory, "trade-offer-item");
+  div.innerHTML += `<div>${select} Qty: <input type="number" min="1" value="1" class="trade-offer-qty" style="width:50px;"/></div>`;
+}
+function addTradeRequestRow() {
+  const div = document.getElementById("trade-request-list");
+  const select = itemDropdown(items.reduce((acc, i) => { acc[i.name] = i; return acc; }, {}), "trade-request-item");
+  div.innerHTML += `<div>${select} Qty: <input type="number" min="1" value="1" class="trade-request-qty" style="width:50px;"/></div>`;
+}
+function itemDropdown(pool, className) {
+  return `<select class="${className}">
+    ${Object.keys(pool).map(name =>
+      `<option value="${name}">${name}</option>`
+    ).join("
+    )}
+    </select>`;
+}
+
+/* ====== Send Trade Offer ====== */
+async function sendTradeOffer() {
+  const toUser = document.getElementById("trade-username").value.trim();
+  if (!toUser.match(/^[a-zA-Z0-9_]{3,16}$/) || toUser === username) {
+    document.getElementById("trade-status").innerText = "Invalid recipient username.";
+    return;
+  }
+  const offerEls = document.getElementsByClassName("trade-offer-item");
+  const offerQtys = document.getElementsByClassName("trade-offer-qty");
+  const requestEls = document.getElementsByClassName("trade-request-item");
+  const requestQtys = document.getElementsByClassName("trade-request-qty");
+  const offer = {}, request = {};
+  // Build offer
+  for (let i = 0; i < offerEls.length; i++) {
+    const name = offerEls[i].value;
+    const qty = parseInt(offerQtys[i].value);
+    if (!name || isNaN(qty) || qty < 1) continue;
+    if (!inventory[name] || inventory[name].count < qty) {
+      document.getElementById("trade-status").innerText = \
+        `Not enough of item: ${name}`;
+      return;
+    }
+    offer[name] = qty;
+  }
+  // Build request
+  for (let i = 0; i < requestEls.length; i++) {
+    const name = requestEls[i].value;
+    const qty = parseInt(requestQtys[i].value);
+    if (!name || isNaN(qty) || qty < 1) continue;
+    request[name] = qty;
+  }
+  if (Object.keys(offer).length === 0 || Object.keys(request).length === 0) {
+    document.getElementById("trade-status").innerText = "You must offer and request at least one item.";
+    return;
+  }
+  // Check recipient exists
+  const userDoc = await db.collection("users").doc(toUser).get();
+  if (!userDoc.exists) {
+    document.getElementById("trade-status").innerText = "Recipient username does not exist.";
+    return;
+  }
+  // Save trade offer
+  await db.collection("trades").add({
+    from: username,
+    to: toUser,
+    offer,
+    request,
+    status: "pending",
+    timestamp: Date.now()
+  });
+  document.getElementById("trade-status").innerText = "Trade offer sent!";
+}
+
+/* ====== Incoming Trades ====== */
+async function showIncomingTrades() {
+  document.getElementById("inventory").innerHTML = "";
+  document.getElementById("result").innerHTML = "";
+  document.getElementById("trade-ui").innerHTML = "";
+  const div = document.getElementById("trade-incoming");
+  div.innerHTML = "<h2>Incoming Trade Offers</h2>";
+  const querySnapshot = await db.collection("trades").where("to", "==", username).where("status", "==", "pending").get();
+  if (querySnapshot.empty) {
+    div.innerHTML += "<p>No pending trades.</p>";
+    return;
+  }
+  querySnapshot.forEach(doc => {
+    const trade = doc.data();
+    div.innerHTML += `<div class="trade-offer">
+      <b>From:</b> ${trade.from}<br>
+      <b>Offer:</b> ${formatTradeItems(trade.offer)}<br>
+      <b>Request:</b> ${formatTradeItems(trade.request)}<br>
+      <button onclick="acceptTrade('${doc.id}')">Accept</button>
+      <button onclick="declineTrade('${doc.id}')">Decline</button>
+    </div>`;
+  });
+}
+function formatTradeItems(obj) {
+  return Object.entries(obj).map(([name, qty]) => `${name} x${qty}`).join(", ");
+}
+
+/* ====== Accept/Decline Trades ====== */
+async function acceptTrade(tradeId) {
+  const tradeDoc = await db.collection("trades").doc(tradeId).get();
+  if (!tradeDoc.exists) return;
+  const trade = tradeDoc.data();
+  // Check sender's inventory
+  const senderRef = db.collection("users").doc(trade.from);
+  const senderDoc = await senderRef.get();
+  const senderInv = senderDoc.data().inventory || {};
+  for (const [name, qty] of Object.entries(trade.offer)) {
+    if (!senderInv[name] || senderInv[name].count < qty) {
+      alert(`Sender no longer has enough of item: ${name}. Trade cancelled.`);
+      await db.collection("trades").doc(tradeId).update({ status: "declined" });
+      showIncomingTrades();
+      return;
+    }
+  }
+  // Check receiver's inventory (you)
+  for (const [name, qty] of Object.entries(trade.request)) {
+    if (!inventory[name] || inventory[name].count < qty) {
+      alert(`You no longer have enough of item: ${name}. Trade cancelled.`);
+      await db.collection("trades").doc(tradeId).update({ status: "declined" });
+      showIncomingTrades();
+      return;
+    }
+  }
+  // Perform trade
+  for (const [name, qty] of Object.entries(trade.offer)) {
+    senderInv[name].count -= qty;
+    if (inventory[name]) inventory[name].count += qty;
+    else inventory[name] = { count: qty, rarity: items.find(i => i.name === name).rarity };
+  }
+  for (const [name, qty] of Object.entries(trade.request)) {
+    inventory[name].count -= qty;
+    if (senderInv[name]) senderInv[name].count += qty;
+    else senderInv[name] = { count: qty, rarity: items.find(i => i.name === name).rarity };
+  }
+  // Remove zeroes
+  Object.keys(senderInv).forEach(k => { if (senderInv[k].count <= 0) delete senderInv[k]; });
+  Object.keys(inventory).forEach(k => { if (inventory[k].count <= 0) delete inventory[k]; });
+  // Update DB
+  await db.collection("users").doc(trade.from).update({ inventory: senderInv });
+  await db.collection("users").doc(username).update({ inventory });
+  await db.collection("trades").doc(tradeId).update({ status: "accepted" });
+  alert("Trade completed!");
+  showIncomingTrades();
+}
+
+/* ====== Decline Trade ====== */
+async function declineTrade(tradeId) {
+  await db.collection("trades").doc(tradeId).update({ status: "declined" });
+  showIncomingTrades();
+}
+</script>
+</body>
+</html>
